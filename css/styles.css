@@ -187,3 +187,149 @@ nav a.active {
 html {
     scroll-behavior: smooth;
 }
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    transition: all 0.2s ease;
+}
+
+.project-card:hover {
+    border-color: #aaaaaa;
+    transform: translateY(-4px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+#skills li:hover {
+    background-color: #1a1a1a;
+    color: #ffffff;
+    border-color: #1a1a1a;
+}
+
+#hero {
+    animation: fadeUp 0.8s ease forwards;
+}
+
+@keyframes fadeUp {
+    from {
+        opacity: 0;
+        transform: translateY(24px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.fade-in {
+    opacity: 0;
+    transform: translateY(30px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+}
+
+.fade-in.visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+@media (max-width: 600px) {
+
+    nav {
+        flex-direction: column;
+        gap: 12px;
+        text-align: center;
+    }
+
+    nav ul {
+        gap: 16px;
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+
+    #hero h1 {
+        font-size: 28px;
+    }
+
+    #hero p {
+        font-size: 16px;
+    }
+
+    #hero a {
+        display: block;
+        margin: 6px auto;
+        width: fit-content;
+    }
+
+    #about h2,
+    #skills h2,
+    #projects h2,
+    #contact h2 {
+        font-size: 22px;
+    }
+
+    #skills ul {
+        gap: 8px;
+    }
+
+    .project-card {
+        padding: 16px;
+    }
+
+}
+
+#github {
+    background-color: #f9f9f9;
+    padding: 80px 24px;
+}
+
+#github h2 {
+    max-width: 900px;
+    margin: 0 auto 24px;
+    font-size: 28px;
+    font-weight: 600;
+}
+
+#github-projects {
+    max-width: 900px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+}
+
+.github-card {
+    background-color: #ffffff;
+    border: 1px solid #e5e5e5;
+    border-radius: 12px;
+    padding: 20px;
+    transition: all 0.2 ease;
+}
+
+.github-card-hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+    border-color: #aaaaaa;
+}
+
+.github-card h3 {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.github-card p {
+    font-size: 14px;
+    color: #555555;
+    margin-bottom: 14px;
+    line-height: 1.6;
+}
+
+.github-card a {
+    font-size: 13px;
+    color: #1a1a1a;
+    font-weight: 500;
+    text-decoration: none;
+    border-bottom: 1px solid #1a1a1a;
+    padding-bottom: 1px;
+}
