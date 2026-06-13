@@ -43,6 +43,7 @@ const observer = new IntersectionObserver(function(entries) {
     });
 }, { threshold: 0.1 });
 
+
 faders.forEach(fader => {
     observer.observe(fader);
 });
