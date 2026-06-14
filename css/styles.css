@@ -151,7 +151,7 @@ nav a.active {
 #about p {
     font-size: 15px;
     color: #444;
-    max-width: 500px;
+    max-width: auto;
     margin-bottom: 12px;
 }
 
