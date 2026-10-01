@@ -199,9 +199,20 @@ static void do_fetch(void) {
     command("GET ", full, 30000);
 }
 
+static void do_ask(void) {
+    static char question[200];
+
+    print_line("Lowercase: [alpha][alpha]");
+    input("Ask:", question, sizeof question);
+    if (!question[0]) return;
+    print_line("Thinking...");
+    command("ASK ", question, 60000);
+}
+
 static void show_menu(void) {
     screen_clear();
-    print_line("TI-84 CE Wi-Fi");
+    /* 9 rows max: the 10th row triggers "-- more --" paging. */
+    print_line("TI-84 CE Wi-Fi [clear]Quit");
     print_line("1:Status");
     print_line("2:Scan networks");
     print_line("3:Join network");
@@ -209,7 +220,7 @@ static void show_menu(void) {
     print_line("5:Time");
     print_line("6:Setup via phone");
     print_line("7:Forget network");
-    print_line("[clear]:Quit");
+    print_line("8:Ask Gemini");
 }
 
 static bool connect_bridge(void) {
@@ -271,6 +282,7 @@ int main(void) {
                 print_line("and pick a network.");
                 break;
             case sk_7: command("FORGET", NULL, 3000); break;
+            case sk_8: do_ask(); break;
             default: show_menu(); continue;
         }
         if (!has_srl_device) running = false;

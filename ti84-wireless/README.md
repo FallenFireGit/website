@@ -88,14 +88,22 @@ Using PlatformIO:
 
 ```sh
 cd firmware
-pio run -t upload        # USB-C plugged into your PC
-pio device monitor       # type PING, SCAN, GET http://example.com
+pio run -e c3_bench -t upload     # USB-C plugged into your PC
+pio device monitor --echo --rts 0 --dtr 0   # type PING, SCAN, GET http://example.com
 ```
+
+The normal `c3_supermini` build detaches from USB until it sees the calculator (see *How the USB port is shared*), so a PC can't talk to it. The `c3_bench` build stays attached for testing. **Flash the normal build before installing:**
+
+```sh
+pio run -e c3_supermini -t upload
+```
+
+If the C3 doesn't show up as a COM port, hold BOOT, tap RST, release BOOT, then upload. Unplug and replug afterwards to start the new firmware.
 
 Using the Arduino IDE instead:
 - Install ESP32 core **2.0.17**.
 - Board: "ESP32C3 Dev Module", USB CDC On Boot: Enabled, CPU 80 MHz.
-- Copy `src/main.cpp` into a sketch and install the `WiFiManager` (tzapu) library.
+- Copy `src/main.cpp` into a sketch and install the `WiFiManager` (tzapu) and `ArduinoJson` (bblanchon, v7) libraries.
 
 On first boot with no saved network, the C3 opens a Wi-Fi access point called **TI84-Setup**. Join it from your phone and pick your network, which saves the credentials.
 
@@ -188,7 +196,23 @@ Protocol
 | `GET <url>` | page text: HTML tags stripped, ASCII only, max 2 KB, then `OK HTTP <code>` |
 | `TIME` | `YYYY-MM-DD HH:MM:SS` from NTP |
 | `TZ <posix tz>` | sets the time zone, e.g. `TZ EST5EDT,M3.2.0,M11.1.0` |
+| `KEY <api key>` | saves a Gemini API key on the C3 (`KEY` alone clears it) |
+| `MODEL <name>` | sets the Gemini model; `MODEL` alone resets to `gemini-flash-latest` |
+| `ASK <question>` | Gemini's answer as plain ASCII, wrapped to 26 columns |
 | `BYE` | releases the USB bus |
+
+All text replies are word-wrapped to the calculator's 26-column screen.
+
+Gemini
+----------------
+
+Get a free API key at [aistudio.google.com](https://aistudio.google.com), then send it once from a serial monitor on the bench build:
+
+```
+KEY <your key>
+```
+
+The key is stored in the C3's flash, never in this repo. On the calculator, pick **8: Ask Gemini**. If the model is overloaded (HTTP 503) or rate-limited (429), the C3 retries once with `gemini-flash-lite-latest`.
 
 Typing passwords on the keypad is a pain. Press [alpha][alpha] for lowercase, or use **6: Setup via phone** instead.
 

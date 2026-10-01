@@ -11,6 +11,7 @@
 #include <WiFiManager.h>
 #include <ArduinoOTA.h>
 #include <Preferences.h>
+#include <ArduinoJson.h>
 #include <time.h>
 #include "soc/usb_serial_jtag_struct.h"
 
@@ -28,6 +29,16 @@ static const uint32_t PORTAL_TIMEOUT_S  = 180;
 static const size_t   MAX_LINE          = 512;
 static const size_t   MAX_RAW_BODY      = 8192;
 static const size_t   MAX_TEXT_OUT      = 2048;
+static const size_t   WRAP_COLS         = 26;      // calc homescreen width
+static const uint16_t ASK_TIMEOUT_MS    = 45000;
+
+static const char *GEMINI_DEFAULT_MODEL  = "gemini-flash-latest";
+static const char *GEMINI_FALLBACK_MODEL = "gemini-flash-lite-latest";
+static const char *GEMINI_SYSTEM =
+    "You answer on a TI-84 calculator screen (26x10 characters). "
+    "Reply in plain ASCII text only: no Markdown, no LaTeX, no emoji, no tables. "
+    "Be brief: a few short sentences unless the user asks for more. "
+    "Write math inline, e.g. x^2+3x-4=0, sqrt(2), pi.";
 
 static const char *HOSTNAME = "ti84-wifi";
 static const char *VERSION  = "TI84-WIFI 1.0";
@@ -46,6 +57,7 @@ static uint32_t lastActivity = 0;
 static Preferences prefs;
 static WiFiManager wm;
 static bool portalRunning = false;
+static uint32_t portalStarted = 0;
 static String lineBuf;
 
 static bool vbusPresent() {
@@ -54,7 +66,8 @@ static bool vbusPresent() {
 
 static void usbPullup(bool attach) {
   // With the override set and every pull disabled, the host sees no device.
-  USB_SERIAL_JTAG.conf0.dp_pullup = 0;
+  // dp_pullup must be restored on attach: clearing the override alone leaves D+ floating.
+  USB_SERIAL_JTAG.conf0.dp_pullup = attach ? 1 : 0;
   USB_SERIAL_JTAG.conf0.dm_pullup = 0;
   USB_SERIAL_JTAG.conf0.dp_pulldown = 0;
   USB_SERIAL_JTAG.conf0.dm_pulldown = 0;
@@ -80,6 +93,9 @@ static void setState(LinkState s) {
 }
 
 static void updateLink() {
+#ifdef BENCH_MODE
+  return;  // bench: VBUS sense isn't wired, stay attached to the PC
+#endif
   uint32_t now = millis();
   bool vbus = vbusPresent();
   if (vbus) {
@@ -126,6 +142,13 @@ static void dataLine(const String &s) {
 }
 
 // ---- Wi-Fi ----
+// WiFi.SSID() is only filled while connected; the saved network lives in the driver config.
+static String savedSsid() {
+  wifi_config_t conf;
+  if (esp_wifi_get_config(WIFI_IF_STA, &conf) != ESP_OK) return "";
+  return String(reinterpret_cast<const char *>(conf.sta.ssid));
+}
+
 static bool wifiUp(uint32_t timeoutMs = 10000) {
   if (WiFi.status() == WL_CONNECTED) return true;
   if (WiFi.getMode() == WIFI_OFF) WiFi.mode(WIFI_STA);
@@ -154,6 +177,14 @@ static void startPortal() {
   wm.setConfigPortalTimeout(PORTAL_TIMEOUT_S);
   wm.startConfigPortal("TI84-Setup");
   portalRunning = true;
+  portalStarted = millis();
+}
+
+static void stopPortal() {
+  if (!portalRunning) return;
+  if (wm.getConfigPortalActive()) wm.stopConfigPortal();
+  WiFi.mode(WIFI_STA);
+  portalRunning = false;
 }
 
 // ---- Text cleanup for the calculator's ASCII-only homescreen ----
@@ -216,6 +247,44 @@ static String htmlToText(const String &in, bool isHtml) {
   return out;
 }
 
+// Fold common UTF-8 punctuation to ASCII; anything else becomes one '?'.
+static String asciiFold(const String &in) {
+  String out;
+  out.reserve(in.length());
+  for (size_t i = 0; i < in.length();) {
+    uint8_t c = in[i];
+    if (c < 0x80) { out += (char)c; i++; continue; }
+    int n = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+    uint32_t cp = n == 4 ? c & 0x07 : n == 3 ? c & 0x0F : n == 2 ? c & 0x1F : 0;
+    for (int k = 1; k < n && i + k < in.length(); k++) cp = (cp << 6) | (in[i + k] & 0x3F);
+    i += n;
+    switch (cp) {
+      case 0x2018: case 0x2019: out += '\''; break;
+      case 0x201C: case 0x201D: out += '"'; break;
+      case 0x2013: case 0x2014: case 0x2212: out += '-'; break;
+      case 0x2026: out += "..."; break;
+      case 0x00A0: out += ' '; break;
+      case 0x00D7: out += '*'; break;
+      case 0x00F7: out += '/'; break;
+      case 0x00B0: out += " deg"; break;
+      default: out += '?';
+    }
+  }
+  return out;
+}
+
+// One data line per screen row, broken at spaces where possible.
+static void sendWrapped(String line) {
+  while (line.length() > WRAP_COLS) {
+    int cut = line.lastIndexOf(' ', WRAP_COLS);
+    if (cut <= 0) cut = WRAP_COLS;
+    dataLine(line.substring(0, cut));
+    line = line.substring(cut);
+    line.trim();
+  }
+  if (line.length()) dataLine(line);
+}
+
 static void sendText(const String &text) {
   int start = 0;
   while (start <= (int)text.length()) {
@@ -223,7 +292,7 @@ static void sendText(const String &text) {
     if (nl < 0) nl = text.length();
     String line = text.substring(start, nl);
     line.trim();
-    if (line.length()) dataLine(line);
+    if (line.length()) sendWrapped(line);
     start = nl + 1;
   }
 }
@@ -234,15 +303,16 @@ static void cmdStatus() {
   dataLine(String(VERSION));
   dataLine(String("WiFi: ") + (up ? "connected" : "down"));
   if (up) {
-    dataLine("SSID: " + WiFi.SSID());
+    dataLine("SSID: " + asciiFold(WiFi.SSID()));
     dataLine("IP: " + WiFi.localIP().toString());
     dataLine("RSSI: " + String(WiFi.RSSI()) + " dBm");
-  } else if (WiFi.SSID().length()) {
-    dataLine("Saved: " + WiFi.SSID());
+  } else if (savedSsid().length()) {
+    dataLine("Saved: " + asciiFold(savedSsid()));
   } else {
     dataLine("No saved network");
   }
-  if (portalRunning) dataLine("Setup AP: TI84-Setup");
+  dataLine(String("Gemini key: ") + (prefs.isKey("gkey") ? "set" : "not set"));
+  if (portalRunning && (WiFi.getMode() & WIFI_MODE_AP)) dataLine("Setup AP: TI84-Setup");
   ok();
 }
 
@@ -253,7 +323,7 @@ static void cmdScan() {
   for (int i = 0; i < n && i < 20; i++) {
     String s = String(WiFi.RSSI(i)) + " ";
     s += WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? " " : "*";
-    s += WiFi.SSID(i);
+    s += asciiFold(WiFi.SSID(i));
     dataLine(s);
   }
   WiFi.scanDelete();
@@ -265,6 +335,7 @@ static void cmdJoin(const String &args) {
   String ssid = tab < 0 ? args : args.substring(0, tab);
   String pass = tab < 0 ? "" : args.substring(tab + 1);
   if (!ssid.length()) { err("usage: JOIN ssid<TAB>pass"); return; }
+  stopPortal();
   WiFi.persistent(true);
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(HOSTNAME);
@@ -290,6 +361,7 @@ static void cmdGet(const String &url) {
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setTimeout(10000);
   http.setUserAgent(VERSION);
+  http.useHTTP10(true);  // no chunked encoding: the raw stream read below is the body as-is
   bool begun = url.startsWith("https://") ? http.begin(secure, url) : http.begin(plain, url);
   if (!begun) { err("bad url"); return; }
 
@@ -319,13 +391,86 @@ static void cmdGet(const String &url) {
 
 static void cmdTime() {
   if (!wifiUp()) { err("wifi down"); return; }
-  String tz = prefs.getString("tz", "UTC0");
+  String tz = prefs.isKey("tz") ? prefs.getString("tz") : "UTC0";
   configTzTime(tz.c_str(), "pool.ntp.org", "time.nist.gov");
   struct tm t;
   if (!getLocalTime(&t, 8000)) { err("ntp timeout"); return; }
   char buf[32];
   strftime(buf, sizeof buf, "%Y-%m-%d %H:%M:%S", &t);
   dataLine(buf);
+  ok();
+}
+
+// ---- Gemini ----
+// POSTs one generateContent request; returns the HTTP code (<= 0 on transport error).
+static int geminiRequest(const String &model, const String &key, const String &body,
+                         JsonDocument &resp, DeserializationError &jerr, String &transportErr) {
+  WiFiClientSecure secure;
+  secure.setInsecure();  // same trade-off as GET: no CA bundle on board
+  HTTPClient http;
+  http.setTimeout(ASK_TIMEOUT_MS);
+  http.useHTTP10(true);  // plain body so ArduinoJson can parse the stream directly
+  String url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent";
+  if (!http.begin(secure, url)) { transportErr = "bad url"; return -1; }
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("x-goog-api-key", key);
+  int code = http.POST(body);
+  if (code <= 0) { transportErr = http.errorToString(code); http.end(); return code; }
+
+  // Keep only the answer text and any error message; the full reply can be large.
+  JsonDocument filter;
+  filter["candidates"][0]["content"]["parts"][0]["text"] = true;
+  filter["candidates"][0]["finishReason"] = true;
+  filter["error"]["message"] = true;
+  jerr = deserializeJson(resp, http.getStream(), DeserializationOption::Filter(filter));
+  http.end();
+  return code;
+}
+
+static void cmdAsk(const String &question) {
+  if (!question.length()) { err("usage: ASK question"); return; }
+  String key = prefs.isKey("gkey") ? prefs.getString("gkey") : "";
+  if (!key.length()) { err("no API key: send KEY <key>"); return; }
+  if (!wifiUp()) { err("wifi down"); return; }
+  String model = prefs.isKey("gmodel") ? prefs.getString("gmodel") : GEMINI_DEFAULT_MODEL;
+
+  JsonDocument req;
+  req["systemInstruction"]["parts"][0]["text"] = GEMINI_SYSTEM;
+  req["contents"][0]["role"] = "user";
+  req["contents"][0]["parts"][0]["text"] = question;
+  req["generationConfig"]["maxOutputTokens"] = 2048;
+  String body;
+  serializeJson(req, body);
+
+  JsonDocument resp;
+  DeserializationError jerr;
+  String transportErr;
+  int code = geminiRequest(model, key, body, resp, jerr, transportErr);
+  // Overloaded (503) or rate-limited (429): retry once on the lighter model.
+  if ((code == 503 || code == 429) && model != GEMINI_FALLBACK_MODEL) {
+    resp.clear();
+    code = geminiRequest(GEMINI_FALLBACK_MODEL, key, body, resp, jerr, transportErr);
+  }
+  if (code <= 0) { err(transportErr); return; }
+
+  if (code != 200) {
+    String msg = resp["error"]["message"] | "";
+    if (!msg.length()) msg = "HTTP " + String(code);
+    err(asciiFold(msg).substring(0, 200));
+    return;
+  }
+  if (jerr) { err(String("bad reply: ") + jerr.c_str()); return; }
+
+  String answer;
+  for (JsonVariant part : resp["candidates"][0]["content"]["parts"].as<JsonArray>()) {
+    answer += part["text"] | "";
+  }
+  if (!answer.length()) {
+    String why = resp["candidates"][0]["finishReason"] | "empty";
+    err("no answer (" + why + ")");
+    return;
+  }
+  sendText(htmlToText(asciiFold(answer), false));
   ok();
 }
 
@@ -348,12 +493,25 @@ static void handleLine(String line) {
   if (cmd == "SETUP") { startPortal(); ok("join AP TI84-Setup"); return; }
   if (cmd == "GET") { cmdGet(args); return; }
   if (cmd == "TIME") { cmdTime(); return; }
+  if (cmd == "ASK") { cmdAsk(args); return; }
+  if (cmd == "KEY") {
+    if (args.length()) prefs.putString("gkey", args); else prefs.remove("gkey");
+    ok(args.length() ? "key saved" : "key cleared");
+    return;
+  }
+  if (cmd == "MODEL") {
+    if (args.length()) prefs.putString("gmodel", args); else prefs.remove("gmodel");
+    ok(prefs.isKey("gmodel") ? prefs.getString("gmodel") : GEMINI_DEFAULT_MODEL);
+    return;
+  }
   if (cmd == "TZ") { prefs.putString("tz", args.length() ? args : "UTC0"); ok(); return; }
   if (cmd == "BYE") {
     ok();
     Serial.flush();
     delay(50);
+#ifndef BENCH_MODE
     setState(RELEASED);
+#endif
     return;
   }
   err("unknown command");
@@ -368,14 +526,22 @@ void setup() {
 
   Serial.begin(115200);
   Serial.setTxTimeoutMs(50);  // never stall if the calc stops reading
+  // Serial is the calc's protocol link: keep library and IDF logs off it.
+  Serial.setDebugOutput(false);
+  esp_log_level_set("*", ESP_LOG_NONE);
+  wm.setDebugOutput(false);
   prefs.begin("ti84", false);
 
   ArduinoOTA.setHostname(HOSTNAME);
   WiFi.mode(WIFI_STA);
-  if (!WiFi.SSID().length()) startPortal();  // first boot: no saved network
+  if (!savedSsid().length()) startPortal();  // first boot: no saved network
 
   // Start released so a PC that is already plugged in is never disturbed.
+#ifdef BENCH_MODE
+  setState(ARMED);  // pull-up on so the PC sees the serial port
+#else
   setState(RELEASED);
+#endif
   vbusLowSince = vbusPresent() ? 0 : millis();
 }
 
@@ -384,7 +550,7 @@ void loop() {
 
   if (portalRunning) {
     wm.process();
-    if (!wm.getConfigPortalActive()) portalRunning = false;
+    if (!wm.getConfigPortalActive() || millis() - portalStarted > PORTAL_TIMEOUT_S * 1000UL) stopPortal();
   }
   if (WiFi.status() == WL_CONNECTED) ArduinoOTA.handle();
 
