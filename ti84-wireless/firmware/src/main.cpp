@@ -142,11 +142,14 @@ static void dataLine(const String &s) {
 }
 
 // ---- Wi-Fi ----
-// WiFi.SSID() is only filled while connected; the saved network lives in the driver config.
+// WiFi.SSID() is only filled while connected; the saved network lives in the driver config,
+// which can't be read while the radio is off (wifiOff), so keep the last value seen.
 static String savedSsid() {
+  static String cached;
   wifi_config_t conf;
-  if (esp_wifi_get_config(WIFI_IF_STA, &conf) != ESP_OK) return "";
-  return String(reinterpret_cast<const char *>(conf.sta.ssid));
+  if (esp_wifi_get_config(WIFI_IF_STA, &conf) == ESP_OK)
+    cached = String(reinterpret_cast<const char *>(conf.sta.ssid));
+  return cached;
 }
 
 static bool wifiUp(uint32_t timeoutMs = 10000) {
