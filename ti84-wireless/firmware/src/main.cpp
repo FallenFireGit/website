@@ -31,11 +31,12 @@ static const size_t   MAX_LINE          = 512;
 static const size_t   MAX_RAW_BODY      = 8192;
 static const size_t   MAX_TEXT_OUT      = 2048;
 static const size_t   WRAP_COLS         = 26;      // calc homescreen width
-static const uint16_t ASK_TIMEOUT_MS    = 45000;
+static const uint16_t ASK_FIRST_TRY_MS  = 10000;   // preferred model, before falling back
+static const uint16_t ASK_TIMEOUT_MS    = 30000;   // fallback; both fit the calc's 60 s wait
 static const uint16_t SNAP_TIMEOUT_MS   = 58000;   // Pi: photo + Gemini, with its own fallback
 static const char *DEFAULT_PI_HOST      = "raspberry.local:8084";
 
-static const char *GEMINI_DEFAULT_MODEL  = "gemini-flash-latest";
+static const char *GEMINI_DEFAULT_MODEL  = "gemini-3.5-flash";
 static const char *GEMINI_FALLBACK_MODEL = "gemini-flash-lite-latest";
 static const char *GEMINI_SYSTEM =
     "You answer on a TI-84 calculator screen, 26 characters wide. "
@@ -412,12 +413,12 @@ static void cmdTime() {
 
 // ---- Gemini ----
 // POSTs one generateContent request; returns the HTTP code (<= 0 on transport error).
-static int geminiRequest(const String &model, const String &key, const String &body,
+static int geminiRequest(const String &model, const String &key, const String &body, uint16_t timeoutMs,
                          JsonDocument &resp, DeserializationError &jerr, String &transportErr) {
   WiFiClientSecure secure;
   secure.setInsecure();  // same trade-off as GET: no CA bundle on board
   HTTPClient http;
-  http.setTimeout(ASK_TIMEOUT_MS);
+  http.setTimeout(timeoutMs);
   http.useHTTP10(true);  // plain body so ArduinoJson can parse the stream directly
   String url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent";
   if (!http.begin(secure, url)) { transportErr = "bad url"; return -1; }
@@ -454,11 +455,14 @@ static void cmdAsk(const String &question) {
   JsonDocument resp;
   DeserializationError jerr;
   String transportErr;
-  int code = geminiRequest(model, key, body, resp, jerr, transportErr);
-  // Overloaded (503) or rate-limited (429): retry once on the lighter model.
-  if ((code == 503 || code == 429) && model != GEMINI_FALLBACK_MODEL) {
+  // Free-tier latency swings from ~1 s to 40+ s. Give the preferred model a short
+  // window; if it's slow, busy, rate-limited or erroring, retry once on the
+  // non-thinking lite model, which usually answers in about a second.
+  int code = geminiRequest(model, key, body, ASK_FIRST_TRY_MS, resp, jerr, transportErr);
+  bool retry = code <= 0 || code == 429 || code >= 500;
+  if (retry && model != GEMINI_FALLBACK_MODEL) {
     resp.clear();
-    code = geminiRequest(GEMINI_FALLBACK_MODEL, key, body, resp, jerr, transportErr);
+    code = geminiRequest(GEMINI_FALLBACK_MODEL, key, body, ASK_TIMEOUT_MS, resp, jerr, transportErr);
   }
   if (code <= 0) { err(transportErr); return; }
 

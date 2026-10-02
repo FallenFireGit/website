@@ -208,7 +208,7 @@ Protocol
 | `TIME` | `YYYY-MM-DD HH:MM:SS` from NTP |
 | `TZ <posix tz>` | sets the time zone, e.g. `TZ EST5EDT,M3.2.0,M11.1.0` |
 | `KEY <api key>` | saves a Gemini API key on the C3 (`KEY` alone clears it) |
-| `MODEL <name>` | sets the Gemini model; `MODEL` alone resets to `gemini-flash-latest` |
+| `MODEL <name>` | sets the Gemini model; `MODEL` alone resets to `gemini-3.5-flash` |
 | `ASK <question>` | Gemini's answer as plain ASCII, wrapped to 26 columns |
 | `BYE` | releases the USB bus |
 
@@ -223,7 +223,7 @@ Get a free API key at [aistudio.google.com](https://aistudio.google.com), then s
 KEY <your key>
 ```
 
-The key is stored in the C3's flash, never in this repo. On the calculator, pick **8: Ask Gemini**. If the model is overloaded (HTTP 503) or rate-limited (429), the C3 retries once with `gemini-flash-lite-latest`.
+The key is stored in the C3's flash, never in this repo. On the calculator, pick **8: Ask Gemini**. If the model hasn't answered within 10 s, or is overloaded, rate-limited or erroring, the C3 retries once with `gemini-flash-lite-latest`, which skips the thinking step and usually answers in about a second. Free-tier response times vary a lot from hour to hour.
 
 Text entry uses a built-in editor: arrows move, [del] backspaces, [clear] clears (twice cancels), and [alpha] cycles `abc` / `ABC` / `123` / `SYM` (SYM puts `!@#$%^&*()` on the number keys).
 
