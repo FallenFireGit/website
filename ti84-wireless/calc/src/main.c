@@ -471,15 +471,23 @@ static bool connect_bridge(void) {
     uint32_t start = usb_GetCycleCounter();
 
     print_line("Looking for ESP32...");
-    while (!has_srl_device) {
-        usb_HandleEvents();
-        if (elapsed(start, 10000) || os_GetCSC() == sk_Clear) return false;
+    /* A C3 powered by this port boots when usb_Init turns VBUS on: it enumerates
+     * briefly, detaches as its firmware starts (RELEASED), then re-attaches about
+     * a second later (ARMED). Keep handshaking until one attach answers HELLO. */
+    while (!elapsed(start, 12000)) {
+        while (!has_srl_device) {
+            usb_HandleEvents();
+            if (elapsed(start, 12000) || os_GetCSC() == sk_Clear) return false;
+        }
+        uint32_t settle = usb_GetCycleCounter();
+        while (!elapsed(settle, 200)) usb_HandleEvents();
+        if (!has_srl_device) continue;
+        send_line("HELLO", NULL);
+        resp_t r = read_response(3000, false);
+        if (r == RESP_OK) return true;
+        if (r == RESP_ABORT) return false;
     }
-    /* Give the C3 a moment after enumeration, then handshake. */
-    start = usb_GetCycleCounter();
-    while (!elapsed(start, 200)) usb_HandleEvents();
-    send_line("HELLO", NULL);
-    return read_response(3000, true) == RESP_OK;
+    return false;
 }
 
 int main(void) {

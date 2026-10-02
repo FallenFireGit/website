@@ -591,11 +591,13 @@ void setup() {
   WiFi.mode(WIFI_STA);
   if (!savedSsid().length()) startPortal();  // first boot: no saved network
 
-  // Start released so a PC that is already plugged in is never disturbed.
 #ifdef BENCH_MODE
   setState(ARMED);  // pull-up on so the PC sees the serial port
 #else
-  setState(RELEASED);
+  // Only step aside if a PC cable is already plugged in. Otherwise stay attached:
+  // a C3 powered by the calc's own VBUS boots when WIFI calls usb_Init, and
+  // detaching here dropped that first enumeration ("No bridge found").
+  setState(vbusPresent() ? RELEASED : ARMED);
 #endif
   vbusLowSince = vbusPresent() ? 0 : millis();
 }
