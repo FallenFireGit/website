@@ -243,8 +243,12 @@ Known unknowns (confirm on your hardware)
 ----------------
 
 - **Pad locations** differ between board revisions. Always trust the meter, not a photo.
-- **`srldrvce` and the C3's composite USB descriptor.** The C3 exposes a CDC serial interface plus a vendor JTAG interface. `srldrvce` searches for the CDC interface (`SRL_INTERFACE_ANY`), which should work, and the bench test in step 3 confirms it before you solder. If it fails, the fallback is to open the CDC bulk endpoints directly with `usb_GetDeviceEndpoint` / `usb_ScheduleBulkTransfer`.
-- **Whether the calculator OS turns on VBUS by itself** when ID is grounded while `WIFI` isn't running. If the LED keeps cycling between blink and off with no cable plugged in, that's what's happening. Open an issue with your hardware revision.
+
+Confirmed on hardware (TI-84 Plus CE, OS 5.7.0 via arTIfiCE)
+----------------
+
+- **`srldrvce` works with the C3's composite USB descriptor.** Bench-tested over a Mini-B OTG cable: `WIFI` enumerates the C3's CDC interface (`SRL_INTERFACE_ANY`) and commands work with no PC in the loop.
+- **The calculator only drives VBUS while a USB program is running.** With ID grounded, the OTG-powered C3 stays dark until `WIFI` calls `usb_Init`, then boots and enumerates. So on the bench (C3 powered by the calc) the LED being off before `WIFI` starts is normal; once installed, the C3 runs from the battery and sits ARMED.
 
 Safety and fine print
 ----------------
