@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <ti/flags.h>
 #include <ti/getcsc.h>
 #include <ti/screen.h>
 
@@ -169,8 +170,6 @@ static const char *const mode_names[MODE_COUNT] = {"abc", "ABC", "123", "SYM"};
 
 #define EDIT_FIRST_ROW 1
 #define EDIT_ROWS      8  /* rows 1-8 hold text; row 9 is the help line */
-#define COLOR_BLACK    0x0000
-#define COLOR_WHITE    0xFFFF
 
 /* Letters as printed in green above the keys; [alpha][0] is space as in the OS. */
 static char key_letter(uint8_t key) {
@@ -242,11 +241,10 @@ static void edit_draw(const char *title, edit_mode_t mode, const char *buf, size
     /* Cursor: the character under it, drawn inverted. */
     char under[2] = {cur < len ? buf[cur] : ' ', '\0'};
     os_SetCursorPos(EDIT_FIRST_ROW + cur / SCREEN_COLS, cur % SCREEN_COLS);
-    os_SetDrawFGColor(COLOR_WHITE);
-    os_SetDrawBGColor(COLOR_BLACK);
+    /* Homescreen text ignores the draw colors; the OS inverse-text flag works. */
+    os_SetFlag(TEXT, INVERSE);
     os_PutStrFull(under);
-    os_SetDrawFGColor(COLOR_BLACK);
-    os_SetDrawBGColor(COLOR_WHITE);
+    os_ResetFlag(TEXT, INVERSE);
 
     os_SetCursorPos(SCREEN_ROWS - 1, 0);
     os_PutStrFull("[alpha]mode [del]bksp");
