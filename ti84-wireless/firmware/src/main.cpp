@@ -349,9 +349,21 @@ static void cmdJoin(const String &args) {
   WiFi.persistent(true);
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(HOSTNAME);
+
+  // The calc can only type ASCII: match "Conner's iPhone" to a nearby
+  // "Conner’s iPhone", ignoring apostrophe style and case.
+  int n = WiFi.scanNetworks();
+  String typed = asciiFold(ssid);
+  for (int i = 0; i < n; i++) {
+    if (WiFi.SSID(i) == ssid) break;
+    if (asciiFold(WiFi.SSID(i)).equalsIgnoreCase(typed)) { ssid = WiFi.SSID(i); break; }
+  }
+  WiFi.scanDelete();
+
   WiFi.begin(ssid.c_str(), pass.c_str());
   uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) delay(100);
+  // 12 s plus the ~3 s scan stays inside the calc's 20 s wait for JOIN.
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 12000) delay(100);
   if (WiFi.status() == WL_CONNECTED) {
     ArduinoOTA.begin();
     ok(WiFi.localIP().toString());
