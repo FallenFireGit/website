@@ -162,10 +162,162 @@ static resp_t command(const char *cmd, const char *arg, uint16_t timeout_ms) {
 
 /* ---------- UI ---------- */
 
-static void input(const char *prompt, char *buf, size_t size) {
-    os_SetCursorPos(cur_row, 0);
-    os_GetStringInput(prompt, buf, size);
-    cur_row++;
+/* ---------- Line editor (os_GetStringInput can't move the cursor or delete) ---------- */
+
+typedef enum { MODE_LOWER, MODE_UPPER, MODE_NUM, MODE_SYM, MODE_COUNT } edit_mode_t;
+static const char *const mode_names[MODE_COUNT] = {"abc", "ABC", "123", "SYM"};
+
+#define EDIT_FIRST_ROW 1
+#define EDIT_ROWS      8  /* rows 1-8 hold text; row 9 is the help line */
+#define COLOR_BLACK    0x0000
+#define COLOR_WHITE    0xFFFF
+
+/* Letters as printed in green above the keys; [alpha][0] is space as in the OS. */
+static char key_letter(uint8_t key) {
+    switch (key) {
+        case sk_Math: return 'A';   case sk_Apps: return 'B';   case sk_Prgm: return 'C';
+        case sk_Recip: return 'D';  case sk_Sin: return 'E';    case sk_Cos: return 'F';
+        case sk_Tan: return 'G';    case sk_Power: return 'H';  case sk_Square: return 'I';
+        case sk_Comma: return 'J';  case sk_LParen: return 'K'; case sk_RParen: return 'L';
+        case sk_Div: return 'M';    case sk_Log: return 'N';    case sk_7: return 'O';
+        case sk_8: return 'P';      case sk_9: return 'Q';      case sk_Mul: return 'R';
+        case sk_Ln: return 'S';     case sk_4: return 'T';      case sk_5: return 'U';
+        case sk_6: return 'V';      case sk_Sub: return 'W';    case sk_Store: return 'X';
+        case sk_1: return 'Y';      case sk_2: return 'Z';      case sk_0: return ' ';
+        case sk_DecPnt: return ':'; case sk_Chs: return '?';    case sk_Add: return '"';
+        default: return 0;
+    }
+}
+
+static const char *key_num(uint8_t key) {
+    switch (key) {
+        case sk_0: return "0"; case sk_1: return "1"; case sk_2: return "2"; case sk_3: return "3";
+        case sk_4: return "4"; case sk_5: return "5"; case sk_6: return "6"; case sk_7: return "7";
+        case sk_8: return "8"; case sk_9: return "9";
+        case sk_DecPnt: return "."; case sk_Chs: return "-";  case sk_Comma: return ",";
+        case sk_Add: return "+";    case sk_Sub: return "-";  case sk_Mul: return "*";
+        case sk_Div: return "/";    case sk_Power: return "^"; case sk_LParen: return "(";
+        case sk_RParen: return ")"; case sk_Square: return "^2"; case sk_Recip: return "^-1";
+        case sk_Sin: return "sin(";  case sk_Cos: return "cos(";  case sk_Tan: return "tan(";
+        case sk_Log: return "log(";  case sk_Ln: return "ln(";    case sk_Math: return "sqrt(";
+        case sk_Store: return "=";
+        default: return NULL;
+    }
+}
+
+/* Shifted number row like a PC keyboard, for passwords and URLs. */
+static char key_sym(uint8_t key) {
+    switch (key) {
+        case sk_1: return '!'; case sk_2: return '@'; case sk_3: return '#'; case sk_4: return '$';
+        case sk_5: return '%'; case sk_6: return '^'; case sk_7: return '&'; case sk_8: return '*';
+        case sk_9: return '('; case sk_0: return ')';
+        case sk_DecPnt: return '.'; case sk_Comma: return ';'; case sk_Chs: return '_';
+        case sk_Add: return '=';    case sk_Sub: return '-';   case sk_Mul: return '*';
+        case sk_Div: return '/';    case sk_LParen: return '['; case sk_RParen: return ']';
+        case sk_Store: return '>';  case sk_Math: return '\''; case sk_Power: return '~';
+        default: return 0;
+    }
+}
+
+static void edit_draw(const char *title, edit_mode_t mode, const char *buf, size_t len, size_t cur) {
+    char row[SCREEN_COLS + 1];
+
+    os_ClrHome();
+    os_SetCursorPos(0, 0);
+    os_PutStrFull(title);
+    os_SetCursorPos(0, SCREEN_COLS - 5);
+    os_PutStrFull("[");
+    os_PutStrFull(mode_names[mode]);
+    os_PutStrFull("]");
+
+    for (uint8_t r = 0; r < EDIT_ROWS && (size_t)r * SCREEN_COLS < len; r++) {
+        size_t start = (size_t)r * SCREEN_COLS;
+        size_t n = len - start > SCREEN_COLS ? SCREEN_COLS : len - start;
+        memcpy(row, buf + start, n);
+        row[n] = '\0';
+        os_SetCursorPos(EDIT_FIRST_ROW + r, 0);
+        os_PutStrFull(row);
+    }
+
+    /* Cursor: the character under it, drawn inverted. */
+    char under[2] = {cur < len ? buf[cur] : ' ', '\0'};
+    os_SetCursorPos(EDIT_FIRST_ROW + cur / SCREEN_COLS, cur % SCREEN_COLS);
+    os_SetDrawFGColor(COLOR_WHITE);
+    os_SetDrawBGColor(COLOR_BLACK);
+    os_PutStrFull(under);
+    os_SetDrawFGColor(COLOR_BLACK);
+    os_SetDrawBGColor(COLOR_WHITE);
+
+    os_SetCursorPos(SCREEN_ROWS - 1, 0);
+    os_PutStrFull("[alpha]mode [del]bksp");
+}
+
+/* Full-screen editor. Returns false if cancelled ([clear] on an empty line);
+ * [enter] on an empty line returns true with buf = "". */
+static bool edit_line(const char *title, char *buf, size_t size) {
+    size_t max = size - 1;
+    if (max > EDIT_ROWS * SCREEN_COLS - 1) max = EDIT_ROWS * SCREEN_COLS - 1;
+    size_t len = 0, cur = 0;
+    edit_mode_t mode = MODE_LOWER;
+    bool ok = false;
+
+    buf[0] = '\0';
+    edit_draw(title, mode, buf, len, cur);
+    for (;;) {
+        uint8_t key = os_GetCSC();
+        usb_HandleEvents();
+        if (!key) continue;
+
+        char one[2] = {0, 0};
+        const char *ins = NULL;
+
+        if (key == sk_Enter) { ok = true; break; }
+        if (key == sk_Clear) {
+            if (len == 0) break;
+            len = cur = 0;
+        } else if (key == sk_Alpha) {
+            mode = (mode + 1) % MODE_COUNT;
+        } else if (key == sk_Left) {
+            if (cur > 0) cur--;
+        } else if (key == sk_Right) {
+            if (cur < len) cur++;
+        } else if (key == sk_Up) {
+            cur = cur >= SCREEN_COLS ? cur - SCREEN_COLS : 0;
+        } else if (key == sk_Down) {
+            cur = cur + SCREEN_COLS <= len ? cur + SCREEN_COLS : len;
+        } else if (key == sk_Del) {
+            if (cur > 0) {
+                memmove(buf + cur - 1, buf + cur, len - cur);
+                cur--;
+                len--;
+            }
+        } else if (mode == MODE_NUM) {
+            ins = key_num(key);
+        } else if (mode == MODE_SYM) {
+            one[0] = key_sym(key);
+            if (one[0]) ins = one;
+        } else {
+            one[0] = key_letter(key);
+            if (mode == MODE_LOWER && one[0] >= 'A' && one[0] <= 'Z') one[0] += 'a' - 'A';
+            if (one[0]) ins = one;
+        }
+
+        if (ins) {
+            size_t n = strlen(ins);
+            if (len + n <= max) {
+                memmove(buf + cur + n, buf + cur, len - cur);
+                memcpy(buf + cur, ins, n);
+                cur += n;
+                len += n;
+            }
+        }
+        buf[len] = '\0';
+        edit_draw(title, mode, buf, len, cur);
+    }
+
+    buf[len] = '\0';
+    screen_clear();
+    return ok;
 }
 
 static void do_join(void) {
@@ -173,9 +325,8 @@ static void do_join(void) {
     static char pass[65];
     static char arg[100];
 
-    print_line("Lowercase: [alpha][alpha]");
-    input("SSID:", ssid, sizeof ssid);
-    input("Pass:", pass, sizeof pass);
+    if (!edit_line("Network name:", ssid, sizeof ssid) || !ssid[0]) return;
+    if (!edit_line("Password:", pass, sizeof pass)) return;  /* empty = open network */
     strcpy(arg, ssid);
     strcat(arg, "\t");
     strcat(arg, pass);
@@ -187,8 +338,7 @@ static void do_fetch(void) {
     static char url[200];
     static char full[210];
 
-    input("URL:", url, sizeof url);
-    if (!url[0]) return;
+    if (!edit_line("URL:", url, sizeof url) || !url[0]) return;
     if (strstr(url, "://")) {
         strcpy(full, url);
     } else {
@@ -202,25 +352,29 @@ static void do_fetch(void) {
 static void do_ask(void) {
     static char question[200];
 
-    print_line("Lowercase: [alpha][alpha]");
-    input("Ask:", question, sizeof question);
-    if (!question[0]) return;
+    if (!edit_line("Ask Gemini:", question, sizeof question) || !question[0]) return;
     print_line("Thinking...");
     command("ASK ", question, 60000);
+}
+
+/* Photo on the Pi camera -> Gemini. An empty prompt uses the Pi's default. */
+static void do_camera(void) {
+    static char prompt[200];
+
+    if (!edit_line("Camera prompt:", prompt, sizeof prompt)) return;
+    print_line("Taking photo...");
+    command("SNAP ", prompt, 65000);
 }
 
 static void show_menu(void) {
     screen_clear();
     /* 9 rows max: the 10th row triggers "-- more --" paging. */
     print_line("TI-84 CE Wi-Fi [clear]Quit");
-    print_line("1:Status");
-    print_line("2:Scan networks");
-    print_line("3:Join network");
-    print_line("4:Fetch URL");
-    print_line("5:Time");
-    print_line("6:Setup via phone");
-    print_line("7:Forget network");
-    print_line("8:Ask Gemini");
+    print_line("1:Status     2:Scan");
+    print_line("3:Join       4:Fetch URL");
+    print_line("5:Time       6:Phone setup");
+    print_line("7:Forget     8:Ask Gemini");
+    print_line("9:Camera");
 }
 
 static bool connect_bridge(void) {
@@ -283,6 +437,7 @@ int main(void) {
                 break;
             case sk_7: command("FORGET", NULL, 3000); break;
             case sk_8: do_ask(); break;
+            case sk_9: do_camera(); break;
             default: show_menu(); continue;
         }
         if (!has_srl_device) running = false;

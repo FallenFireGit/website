@@ -214,6 +214,29 @@ KEY <your key>
 
 The key is stored in the C3's flash, never in this repo. On the calculator, pick **8: Ask Gemini**. If the model is overloaded (HTTP 503) or rate-limited (429), the C3 retries once with `gemini-flash-lite-latest`.
 
+Text entry uses a built-in editor: arrows move, [del] backspaces, [clear] clears (twice cancels), and [alpha] cycles `abc` / `ABC` / `123` / `SYM` (SYM puts `!@#$%^&*()` on the number keys).
+
+Pi camera (optional)
+----------------
+
+**9: Camera** on the calculator sends `SNAP <prompt>` to the C3, which POSTs it to `pi/snap_server.py` on a Raspberry Pi on the same Wi-Fi. The Pi takes a photo, asks Gemini about it and returns plain text. An empty prompt means "read this and answer it".
+
+On the Pi (Raspberry Pi OS, camera connected, standard library + `picamera2` only):
+
+```sh
+mkdir -p ~/ti84-snap && cp pi/snap_server.py ~/ti84-snap/
+echo "GEMINI_API_KEY=<your key>" > ~/ti84-snap/.env && chmod 600 ~/ti84-snap/.env
+sudo cp pi/ti84-snap.service /etc/systemd/system/
+sudo systemctl enable --now ti84-snap
+```
+
+The C3 looks for `raspberry.local:8084`; change it with `PI <host:port>`. Put both on the same network (for a phone hotspot, give the Pi's hotspot profile a higher `autoconnect-priority`). `SNAP_TEST_IMAGE=/path.jpg` in `.env` uses a file instead of the camera.
+
+| Command | Reply |
+|---|---|
+| `SNAP <prompt>` | Gemini's answer about a fresh Pi camera photo |
+| `PI <host:port>` | sets the Pi address; `PI` alone resets to `raspberry.local:8084` |
+
 Typing passwords on the keypad is a pain. Press [alpha][alpha] for lowercase, or use **6: Setup via phone** instead.
 
 Known unknowns (confirm on your hardware)

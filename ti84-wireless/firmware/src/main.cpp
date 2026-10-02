@@ -12,6 +12,7 @@
 #include <ArduinoOTA.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
+#include <ESPmDNS.h>
 #include <time.h>
 #include "soc/usb_serial_jtag_struct.h"
 
@@ -31,6 +32,8 @@ static const size_t   MAX_RAW_BODY      = 8192;
 static const size_t   MAX_TEXT_OUT      = 2048;
 static const size_t   WRAP_COLS         = 26;      // calc homescreen width
 static const uint16_t ASK_TIMEOUT_MS    = 45000;
+static const uint16_t SNAP_TIMEOUT_MS   = 58000;   // Pi: photo + Gemini, with its own fallback
+static const char *DEFAULT_PI_HOST      = "raspberry.local:8084";
 
 static const char *GEMINI_DEFAULT_MODEL  = "gemini-flash-latest";
 static const char *GEMINI_FALLBACK_MODEL = "gemini-flash-lite-latest";
@@ -477,6 +480,39 @@ static void cmdAsk(const String &question) {
   ok();
 }
 
+// ---- Pi camera (see ../pi/snap_server.py) ----
+static void cmdSnap(const String &prompt) {
+  if (!wifiUp()) { err("wifi down"); return; }
+  String hostPort = prefs.isKey("pihost") ? prefs.getString("pihost") : DEFAULT_PI_HOST;
+  int colon = hostPort.lastIndexOf(':');
+  String host = colon < 0 ? hostPort : hostPort.substring(0, colon);
+  uint16_t port = colon < 0 ? 80 : hostPort.substring(colon + 1).toInt();
+
+  // The IDF resolver doesn't do mDNS; look .local names up ourselves.
+  String addr = host;
+  if (host.endsWith(".local")) {
+    MDNS.begin(HOSTNAME);  // no-op if ArduinoOTA already started it
+    IPAddress ip = MDNS.queryHost(host.substring(0, host.length() - 6), 3000);
+    if (ip == IPAddress()) { err("Pi not found: " + host); return; }
+    addr = ip.toString();
+  }
+
+  WiFiClient client;
+  HTTPClient http;
+  http.setTimeout(SNAP_TIMEOUT_MS);
+  http.useHTTP10(true);
+  if (!http.begin(client, "http://" + addr + ":" + String(port) + "/snap")) { err("bad Pi address"); return; }
+  http.addHeader("Content-Type", "text/plain");
+  int code = http.POST(prompt);
+  if (code <= 0) { err("Pi: " + http.errorToString(code)); http.end(); return; }
+  String body = http.getString();
+  http.end();
+
+  if (code != 200) { err(asciiFold("Pi: " + body).substring(0, 200)); return; }
+  sendText(htmlToText(asciiFold(body), false));
+  ok();
+}
+
 static void handleLine(String line) {
   line.trim();
   if (!line.length()) return;
@@ -497,6 +533,12 @@ static void handleLine(String line) {
   if (cmd == "GET") { cmdGet(args); return; }
   if (cmd == "TIME") { cmdTime(); return; }
   if (cmd == "ASK") { cmdAsk(args); return; }
+  if (cmd == "SNAP") { cmdSnap(args); return; }
+  if (cmd == "PI") {
+    if (args.length()) prefs.putString("pihost", args); else prefs.remove("pihost");
+    ok(prefs.isKey("pihost") ? prefs.getString("pihost") : DEFAULT_PI_HOST);
+    return;
+  }
   if (cmd == "KEY") {
     if (args.length()) prefs.putString("gkey", args); else prefs.remove("gkey");
     ok(args.length() ? "key saved" : "key cleared");
