@@ -9,7 +9,8 @@ C3 folds to ASCII and wraps for the calculator screen.
 
 Config (environment, or ~/ti84-snap/.env as KEY=value lines):
     GEMINI_API_KEY   required
-    GEMINI_MODEL     default gemini-flash-latest
+    GEMINI_MODEL     default gemini-flash-lite-latest (fast; vision is fine for worksheets)
+    GEMINI_FALLBACK  default gemini-3.5-flash, asked in parallel; first answer wins
     SNAP_PORT        default 8084
     SNAP_TEST_IMAGE  path to a JPEG to use instead of the camera (testing)
 
@@ -23,11 +24,11 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ENV_FILE = Path.home() / "ti84-snap" / ".env"
-FALLBACK_MODEL = "gemini-flash-lite-latest"
 DEFAULT_PROMPT = "Read this and answer it. If it is a problem, solve it and show brief steps."
 SYSTEM = (
     "You answer on a TI-84 calculator screen (26x10 characters) about a photo the user took. "
@@ -66,8 +67,14 @@ class Camera:
                 cam = Picamera2()
                 cam.configure(cam.create_still_configuration(main={"size": (2304, 1296)}))
                 cam.start()
-                time.sleep(1.0)  # let auto exposure / focus settle
+                time.sleep(1.0)  # let auto exposure settle
                 self.cam = cam
+            # Camera Module 3 has autofocus: focus on whatever is in front of it each shot.
+            if "AfMode" in self.cam.camera_controls:
+                from libcamera import controls
+
+                self.cam.set_controls({"AfMode": controls.AfModeEnum.Auto})
+                self.cam.autofocus_cycle()
             img = self.cam.capture_image("main")
         if img.width > MAX_WIDTH:
             img = img.resize((MAX_WIDTH, img.height * MAX_WIDTH // img.width))
@@ -94,7 +101,7 @@ def gemini(model, key, prompt, jpeg):
         headers={"Content-Type": "application/json", "x-goog-api-key": key},
     )
     try:
-        with urllib.request.urlopen(req, timeout=25) as r:
+        with urllib.request.urlopen(req, timeout=50) as r:
             return r.status, json.load(r)
     except urllib.error.HTTPError as e:
         try:
@@ -105,23 +112,34 @@ def gemini(model, key, prompt, jpeg):
         return 0, {"error": {"message": f"Gemini unreachable: {getattr(e, 'reason', e)}"}}
 
 
+def extract(code, data):
+    """(text, None) for a usable answer, else (None, error message)."""
+    if code != 200:
+        return None, (data.get("error", {}).get("message") or f"HTTP {code}")[:200]
+    cand = data.get("candidates", [{}])[0]
+    text = "".join(p.get("text", "") for p in cand.get("content", {}).get("parts", [])).strip()
+    return (text, None) if text else (None, f"no answer ({cand.get('finishReason', 'empty')})")
+
+
 def answer(prompt, jpeg):
     key = os.environ.get("GEMINI_API_KEY", "")
     if not key:
         raise RuntimeError("no GEMINI_API_KEY on the Pi")
-    model = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
-    code, data = gemini(model, key, prompt, jpeg)
-    # Busy, rate-limited or hung: one retry on the lighter model.
-    if code in (0, 429, 503) and model != FALLBACK_MODEL:
-        code, data = gemini(FALLBACK_MODEL, key, prompt, jpeg)
-    if code != 200:
-        raise RuntimeError((data.get("error", {}).get("message") or f"HTTP {code}")[:200])
-    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-    text = "".join(p.get("text", "") for p in parts).strip()
-    if not text:
-        reason = data.get("candidates", [{}])[0].get("finishReason", "empty")
-        raise RuntimeError(f"no answer ({reason})")
-    return text
+    models = [os.environ.get("GEMINI_MODEL", "gemini-flash-lite-latest"),
+              os.environ.get("GEMINI_FALLBACK", "gemini-3.5-flash")]
+    models = list(dict.fromkeys(m for m in models if m))
+    # Gemini latency swings from ~1 s to 40+ s per model, so ask them all at once
+    # and take the first usable answer. The slower request finishes in the background.
+    pool = ThreadPoolExecutor(max_workers=len(models))
+    futures = {pool.submit(gemini, m, key, prompt, jpeg): m for m in models}
+    pool.shutdown(wait=False)
+    errors = []
+    for fut in as_completed(futures):
+        text, error = extract(*fut.result())
+        if text:
+            return text
+        errors.append(error)
+    raise RuntimeError(errors[0])
 
 
 camera = Camera()
@@ -152,9 +170,11 @@ class Handler(BaseHTTPRequestHandler):
         t0 = time.time()
         try:
             jpeg = camera.jpeg()
+            t1 = time.time()
             text = answer(prompt, jpeg)
             self.reply(200, text)
-            self.log_message("snap ok in %.1fs (%d KB image)", time.time() - t0, len(jpeg) // 1024)
+            self.log_message("snap ok: photo %.1fs, gemini %.1fs (%d KB image)",
+                             t1 - t0, time.time() - t1, len(jpeg) // 1024)
         except Exception as e:  # report every failure to the calculator as text
             self.reply(500, str(e) or e.__class__.__name__)
             self.log_message("snap failed: %s", e)
