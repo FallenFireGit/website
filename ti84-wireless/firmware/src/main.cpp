@@ -504,10 +504,17 @@ static void cmdSnap(const String &prompt) {
   HTTPClient http;
   http.setTimeout(SNAP_TIMEOUT_MS);
   http.useHTTP10(true);
-  if (!http.begin(client, "http://" + addr + ":" + String(port) + "/snap")) { err("bad Pi address"); return; }
-  http.addHeader("Content-Type", "text/plain");
-  int code = http.POST(prompt);
-  if (code <= 0) { err("Pi: " + http.errorToString(code)); http.end(); return; }
+  String url = "http://" + addr + ":" + String(port) + "/snap";
+  int code = HTTPC_ERROR_CONNECTION_REFUSED;
+  // A Pi that has just booted can be on Wi-Fi a few seconds before the service listens.
+  for (int attempt = 0; attempt < 4 && code == HTTPC_ERROR_CONNECTION_REFUSED; attempt++) {
+    if (attempt) delay(2500);
+    if (!http.begin(client, url)) { err("bad Pi address"); return; }
+    http.addHeader("Content-Type", "text/plain");
+    code = http.POST(prompt);
+    if (code <= 0) http.end();
+  }
+  if (code <= 0) { err("Pi: " + http.errorToString(code)); return; }
   String body = http.getString();
   http.end();
 
