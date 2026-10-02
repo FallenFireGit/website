@@ -425,6 +425,37 @@ static void do_camera(void) {
     command("SNAP ", prompt, 65000);
 }
 
+/* Settings stored on the C3, so they can be changed after it's sealed inside. */
+static void do_settings(void) {
+    static char value[200];
+
+    print_line("Settings");
+    print_line("1:Gemini API key");
+    print_line("2:Gemini model");
+    print_line("3:Pi address");
+    print_line("");
+    print_line("Empty model/address =");
+    print_line("back to default.");
+    print_line("[clear]:Back");
+
+    uint8_t key;
+    while (!(key = os_GetCSC())) usb_HandleEvents();
+    screen_clear();
+    switch (key) {
+        case sk_1:
+            if (edit_line("New Gemini key:", value, sizeof value) && value[0]) command("KEY ", value, 3000);
+            break;
+        case sk_2:
+            if (edit_line("Gemini model:", value, sizeof value)) command("MODEL ", value, 3000);
+            break;
+        case sk_3:
+            if (edit_line("Pi host:port:", value, sizeof value)) command("PI ", value, 3000);
+            break;
+        default:
+            break;
+    }
+}
+
 static void show_menu(void) {
     screen_clear();
     /* 9 rows max: the 10th row triggers "-- more --" paging. */
@@ -433,7 +464,7 @@ static void show_menu(void) {
     print_line("3:Join       4:Fetch URL");
     print_line("5:Time       6:Phone setup");
     print_line("7:Forget     8:Ask Gemini");
-    print_line("9:Camera");
+    print_line("9:Camera     0:Settings");
 }
 
 static bool connect_bridge(void) {
@@ -498,6 +529,7 @@ int main(void) {
             case sk_7: command("FORGET", NULL, 3000); break;
             case sk_8: do_ask(); break;
             case sk_9: do_camera(); break;
+            case sk_0: do_settings(); break;
             default: show_menu(); continue;
         }
         if (!has_srl_device) running = false;

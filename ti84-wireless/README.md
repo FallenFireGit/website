@@ -173,9 +173,20 @@ Firmware updates over Wi-Fi (OTA)
 
 While `WIFI` is running and connected, the C3 shows up as `ti84-wifi.local` on your network:
 
+1. Run `WIFI` and press **5: Time** so the C3 joins Wi-Fi. Stay in the menu (the radio switches off 2 minutes after `WIFI` quits).
+2. Note the IP from **1: Status**; Windows often can't resolve `.local` names.
+3. From a PC on the same network:
+
 ```sh
-pio run -e ota -t upload
+pio run -e ota -t upload --upload-port <C3 IP>
 ```
+
+Saved settings (Wi-Fi, Gemini key, model, Pi address, time zone) survive updates.
+
+Settings after install
+----------------
+
+**0: Settings** on the calculator sets the Gemini API key, Gemini model and Pi address on the C3, so they can be changed with the case closed. An empty model or address resets it to the default.
 
 Protocol
 ----------------
