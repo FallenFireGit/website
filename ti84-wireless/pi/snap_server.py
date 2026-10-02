@@ -31,12 +31,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ENV_FILE = Path.home() / "ti84-snap" / ".env"
-DEFAULT_PROMPT = "Read this and answer it. If it is a problem, solve it and show brief steps."
+DEFAULT_PROMPT = "Solve the problem in this photo."
 SYSTEM = (
-    "You answer on a TI-84 calculator screen (26x10 characters) about a photo the user took. "
-    "Reply in plain ASCII text only: no Markdown, no LaTeX, no emoji, no tables. "
-    "Be brief: a few short lines unless asked for more. "
+    "You answer on a TI-84 calculator screen, 26 characters wide, about a photo the user took. "
+    "First line: the final answer only, e.g. 'x=12' or '2csc(2x)'. "
+    "Then, only if it helps, up to 3 short lines with the key steps. "
+    "Do not restate the problem. No headings, labels or step numbers. "
+    "No column alignment, padding spaces or lines of dashes. "
+    "Plain ASCII only: no Markdown, LaTeX, emoji or tables. "
     "Write math inline, e.g. x^2+3x-4=0, sqrt(2), pi. "
+    "If several problems are visible, give one line per problem as '1) answer'. "
+    "Simplify fully and double-check the final answer. "
     "If the photo is unreadable, say so in one line."
 )
 MAX_WIDTH = 1600  # px; plenty for text, keeps the upload small over a phone hotspot

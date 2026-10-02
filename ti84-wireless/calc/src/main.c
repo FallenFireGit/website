@@ -111,6 +111,28 @@ static void print_line(const char *s) {
     }
 }
 
+/* ---------- Reply buffer, shown afterwards by view_lines() ---------- */
+
+#define MAX_LINES 100  /* the C3 caps replies at 2 KB, about 80 screen rows */
+
+static char lines[MAX_LINES][SCREEN_COLS + 1];
+static uint8_t n_lines = 0;
+
+static void add_line(const char *s) {
+    size_t len = strlen(s);
+    do {
+        if (n_lines == MAX_LINES) {
+            strcpy(lines[MAX_LINES - 1], "...(cut)");
+            return;
+        }
+        size_t n = len > SCREEN_COLS ? SCREEN_COLS : len;
+        memcpy(lines[n_lines], s, n);
+        lines[n_lines++][n] = '\0';
+        s += n;
+        len -= n;
+    } while (len > 0);
+}
+
 /* ---------- Protocol: send "CMD args\n", read lines until "OK..." or "ERR..." ---------- */
 
 static void send_line(const char *a, const char *b) {
@@ -143,7 +165,16 @@ static resp_t read_response(uint16_t timeout_ms, bool show) {
 
             bool is_ok = strncmp(line, "OK", 2) == 0;
             bool is_err = strncmp(line, "ERR", 3) == 0;
-            if (show) print_line(line[0] == ' ' ? line + 1 : line);
+            if (show) {
+                if (is_ok) {
+                    if (line[2]) add_line(line + 3);  /* "OK 5 found" -> "5 found"; bare OK hidden */
+                } else if (is_err) {
+                    add_line("Error:");
+                    add_line(line[3] ? line + 4 : "unknown");
+                } else {
+                    add_line(line[0] == ' ' ? line + 1 : line);
+                }
+            }
             if (is_ok) return RESP_OK;
             if (is_err) return RESP_ERR;
         }
@@ -155,10 +186,40 @@ static resp_t read_response(uint16_t timeout_ms, bool show) {
 static resp_t command(const char *cmd, const char *arg, uint16_t timeout_ms) {
     send_line(cmd, arg);
     resp_t r = read_response(timeout_ms, true);
-    if (r == RESP_TIMEOUT) print_line("Timed out.");
-    if (r == RESP_ABORT) print_line("Aborted.");
-    if (r == RESP_LOST) print_line("ESP32 disconnected.");
+    if (r == RESP_TIMEOUT) add_line("Timed out.");
+    if (r == RESP_ABORT) add_line("Aborted.");
+    if (r == RESP_LOST) add_line("ESP32 disconnected.");
     return r;
+}
+
+/* Scrollable view of the collected reply: [up]/[down] scroll, [clear]/[enter] back. */
+static void view_lines(void) {
+    const uint8_t page = SCREEN_ROWS - 1;  /* last row is the help line */
+    uint8_t top = 0;
+
+    for (;;) {
+        os_ClrHome();
+        for (uint8_t r = 0; r < page && top + r < n_lines; r++) {
+            os_SetCursorPos(r, 0);
+            os_PutStrFull(lines[top + r]);
+        }
+        bool more_up = top > 0;
+        bool more_down = top + page < n_lines;
+        os_SetCursorPos(SCREEN_ROWS - 1, 0);
+        /* <= 25 chars: writing the last cell of the last row scrolls the screen. */
+        os_PutStrFull(more_up && more_down ? "[up][down]more [clear]ok"
+                      : more_down          ? "[down]more     [clear]ok"
+                      : more_up            ? "[up]back       [clear]ok"
+                                           : "               [clear]ok");
+
+        uint8_t key;
+        while (!(key = os_GetCSC())) usb_HandleEvents();
+        if (key == sk_Clear || key == sk_Enter) return;
+        if (key == sk_Down && more_down) top++;
+        if (key == sk_Up && more_up) top--;
+        if (key == sk_Right && more_down) top = top + page < n_lines - page ? top + page : n_lines - page;
+        if (key == sk_Left && more_up) top = top > page ? top - page : 0;
+    }
 }
 
 /* ---------- UI ---------- */
@@ -421,6 +482,7 @@ int main(void) {
         if (key == sk_Clear) break;
 
         screen_clear();
+        n_lines = 0;
         switch (key) {
             case sk_1: command("STATUS", NULL, 3000); break;
             case sk_2: print_line("Scanning..."); command("SCAN", NULL, 15000); break;
@@ -429,9 +491,9 @@ int main(void) {
             case sk_5: command("TIME", NULL, 15000); break;
             case sk_6:
                 command("SETUP", NULL, 3000);
-                print_line("On your phone, join");
-                print_line("Wi-Fi \"TI84-Setup\"");
-                print_line("and pick a network.");
+                add_line("On your phone, join");
+                add_line("Wi-Fi \"TI84-Setup\"");
+                add_line("and pick a network.");
                 break;
             case sk_7: command("FORGET", NULL, 3000); break;
             case sk_8: do_ask(); break;
@@ -439,8 +501,7 @@ int main(void) {
             default: show_menu(); continue;
         }
         if (!has_srl_device) running = false;
-        put_row("[any key]", 9);
-        wait_key();
+        if (n_lines) view_lines();  /* nothing to show if the user cancelled an editor */
         show_menu();
     }
 

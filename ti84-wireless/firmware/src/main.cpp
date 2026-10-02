@@ -38,10 +38,13 @@ static const char *DEFAULT_PI_HOST      = "raspberry.local:8084";
 static const char *GEMINI_DEFAULT_MODEL  = "gemini-flash-latest";
 static const char *GEMINI_FALLBACK_MODEL = "gemini-flash-lite-latest";
 static const char *GEMINI_SYSTEM =
-    "You answer on a TI-84 calculator screen (26x10 characters). "
-    "Reply in plain ASCII text only: no Markdown, no LaTeX, no emoji, no tables. "
-    "Be brief: a few short sentences unless the user asks for more. "
-    "Write math inline, e.g. x^2+3x-4=0, sqrt(2), pi.";
+    "You answer on a TI-84 calculator screen, 26 characters wide. "
+    "Lead with the answer itself on the first line. Then, only if it helps, "
+    "up to 3 short lines of key steps or explanation, unless the user asks for more. "
+    "Do not restate the question. No headings, labels or step numbers. "
+    "No column alignment, padding spaces or lines of dashes. "
+    "Plain ASCII only: no Markdown, LaTeX, emoji or tables. "
+    "Write math inline, e.g. x^2+3x-4=0, sqrt(2), pi. Simplify fully.";
 
 static const char *HOSTNAME = "ti84-wifi";
 static const char *VERSION  = "TI84-WIFI 1.0";
