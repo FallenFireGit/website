@@ -9,8 +9,9 @@ C3 folds to ASCII and wraps for the calculator screen.
 
 Config (environment, or ~/ti84-snap/.env as KEY=value lines):
     GEMINI_API_KEY   required
-    GEMINI_MODEL     default gemini-flash-lite-latest (fast; vision is fine for worksheets)
-    GEMINI_FALLBACK  default gemini-3.5-flash, asked in parallel; first answer wins
+    GEMINI_MODEL     default gemini-3.5-flash; preferred answer
+    GEMINI_FAST      default gemini-flash-lite-latest; asked in parallel, used if the
+                     preferred model hasn't answered within GEMINI_GRACE_S (default 10)
     SNAP_PORT        default 8084
     SNAP_TEST_IMAGE  path to a JPEG to use instead of the camera (testing)
 
@@ -25,6 +26,7 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -125,19 +127,31 @@ def answer(prompt, jpeg):
     key = os.environ.get("GEMINI_API_KEY", "")
     if not key:
         raise RuntimeError("no GEMINI_API_KEY on the Pi")
-    models = [os.environ.get("GEMINI_MODEL", "gemini-flash-lite-latest"),
-              os.environ.get("GEMINI_FALLBACK", "gemini-3.5-flash")]
-    models = list(dict.fromkeys(m for m in models if m))
-    # Gemini latency swings from ~1 s to 40+ s per model, so ask them all at once
-    # and take the first usable answer. The slower request finishes in the background.
-    pool = ThreadPoolExecutor(max_workers=len(models))
-    futures = {pool.submit(gemini, m, key, prompt, jpeg): m for m in models}
-    pool.shutdown(wait=False)
+    careful = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
+    fast = os.environ.get("GEMINI_FAST", "gemini-flash-lite-latest")
+    grace = float(os.environ.get("GEMINI_GRACE_S", "10"))
+
+    # Gemini latency swings from ~1 s to 40+ s per model, and the fast model slips more
+    # on math. Ask both at once; prefer the careful answer if it arrives within the grace
+    # period, otherwise take whichever usable answer comes first.
+    pool = ThreadPoolExecutor(max_workers=2)
+    futures = {pool.submit(gemini, careful, key, prompt, jpeg): careful}
+    if fast and fast != careful:
+        futures[pool.submit(gemini, fast, key, prompt, jpeg)] = fast
+    pool.shutdown(wait=False)  # the losing request finishes in the background
+
+    careful_fut = next(iter(futures))
+    try:
+        text, _ = extract(*careful_fut.result(timeout=grace))
+        if text:
+            return text, careful
+    except FuturesTimeout:
+        pass
     errors = []
     for fut in as_completed(futures):
         text, error = extract(*fut.result())
         if text:
-            return text
+            return text, futures[fut]
         errors.append(error)
     raise RuntimeError(errors[0])
 
@@ -171,10 +185,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             jpeg = camera.jpeg()
             t1 = time.time()
-            text = answer(prompt, jpeg)
+            text, model = answer(prompt, jpeg)
             self.reply(200, text)
-            self.log_message("snap ok: photo %.1fs, gemini %.1fs (%d KB image)",
-                             t1 - t0, time.time() - t1, len(jpeg) // 1024)
+            self.log_message("snap ok: photo %.1fs, gemini %.1fs via %s (%d KB image)",
+                             t1 - t0, time.time() - t1, model, len(jpeg) // 1024)
         except Exception as e:  # report every failure to the calculator as text
             self.reply(500, str(e) or e.__class__.__name__)
             self.log_message("snap failed: %s", e)
