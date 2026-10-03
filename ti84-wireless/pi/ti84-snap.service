@@ -1,0 +1,14 @@
+[Unit]
+Description=TI-84 camera -> Gemini bridge
+# Listens on all interfaces, so it doesn't need to wait for Wi-Fi; starting early
+# means it's ready before the C3 can find the Pi.
+After=local-fs.target
+
+[Service]
+User=pi
+ExecStart=/usr/bin/python3 /home/pi/ti84-snap/snap_server.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
