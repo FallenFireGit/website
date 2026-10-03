@@ -24,10 +24,92 @@
 typedef enum { RESP_OK, RESP_ERR, RESP_TIMEOUT, RESP_ABORT, RESP_LOST } resp_t;
 
 static srl_device_t srl;
-static bool has_srl_device = false;
+static bool has_srl_device = false;  /* a bridge link (srldrvce or CH340) is open */
+static bool link_is_ch340 = false;
 static uint8_t srl_buf[512];
 
 static uint8_t cur_row = 0;
+
+/* ---------- CH340 / CH341 USB-serial (classic ESP32 dev boards) ----------
+ * srldrvce supports CDC, FTDI and PL2303 only. This is the minimal CH34x
+ * sequence from the Linux ch341 driver: init, 115200 8N1, DTR/RTS off. */
+
+#define CH34X_VID     0x1A86
+#define CH34X_REQ_INIT    0xA1
+#define CH34X_REQ_WRITE   0x9A
+#define CH34X_REQ_MODEM   0xA4
+#define CH34X_RING_SIZE   1024
+
+static usb_device_t ch_dev;
+static usb_endpoint_t ch_in, ch_out;
+static uint8_t ch_rx_xfer[32];
+static uint8_t ch_ring[CH34X_RING_SIZE];
+static volatile uint16_t ch_head, ch_tail;
+
+static usb_error_t ch_rx_done(usb_endpoint_t endpoint, usb_transfer_status_t status,
+                              size_t transferred, usb_transfer_data_t *data) {
+    (void)data;
+    if (status & (USB_TRANSFER_CANCELLED | USB_TRANSFER_NO_DEVICE)) return USB_SUCCESS;
+    for (size_t i = 0; i < transferred; i++) {
+        uint16_t next = (ch_head + 1) % CH34X_RING_SIZE;
+        if (next == ch_tail) break;  /* full: drop; replies are capped at 2 KB and drained fast */
+        ch_ring[ch_head] = ch_rx_xfer[i];
+        ch_head = next;
+    }
+    usb_ScheduleBulkTransfer(endpoint, ch_rx_xfer, sizeof ch_rx_xfer, ch_rx_done, NULL);
+    return USB_SUCCESS;
+}
+
+static bool ch_ctrl(uint8_t request, uint16_t value, uint16_t index) {
+    usb_control_setup_t setup = {0x40 /* vendor, host->device */, request, value, index, 0};
+    return usb_DefaultControlTransfer(ch_dev, &setup, NULL, 3, NULL) == USB_SUCCESS;
+}
+
+static bool ch340_open(usb_device_t device) {
+    static uint8_t config[64];
+    usb_device_descriptor_t desc;
+    size_t n;
+
+    if (usb_GetDeviceDescriptor(device, &desc, sizeof desc, &n) != USB_SUCCESS) return false;
+    if (desc.idVendor != CH34X_VID || (desc.idProduct != 0x7523 && desc.idProduct != 0x5523))
+        return false;
+    size_t len = usb_GetConfigurationDescriptorTotalLength(device, 0);
+    if (len == 0 || len > sizeof config) return false;
+    if (usb_GetConfigurationDescriptor(device, 0, (usb_configuration_descriptor_t *)config, len, &n) != USB_SUCCESS)
+        return false;
+    if (usb_SetConfiguration(device, (usb_configuration_descriptor_t *)config, len) != USB_SUCCESS)
+        return false;
+
+    ch_dev = device;
+    if (!ch_ctrl(CH34X_REQ_INIT, 0, 0)) return false;
+    /* 115200 baud; bit 7 = deliver short packets instead of waiting for 32 bytes. */
+    if (!ch_ctrl(CH34X_REQ_WRITE, 0x1312, 0xCC83)) return false;
+    if (!ch_ctrl(CH34X_REQ_WRITE, 0x2518, 0x00C3)) return false;  /* 8N1, RX and TX on */
+    /* DTR and RTS both off (inverted register): a dev board's auto-reset stays idle. */
+    if (!ch_ctrl(CH34X_REQ_MODEM, 0xFFFF, 0)) return false;
+
+    ch_out = usb_GetDeviceEndpoint(device, 0x02);
+    ch_in = usb_GetDeviceEndpoint(device, 0x82);
+    if (!ch_out || !ch_in) return false;
+    ch_head = ch_tail = 0;
+    return usb_ScheduleBulkTransfer(ch_in, ch_rx_xfer, sizeof ch_rx_xfer, ch_rx_done, NULL) == USB_SUCCESS;
+}
+
+/* ---------- Link I/O: same calls whichever driver is open ---------- */
+
+static void link_write(const void *data, size_t len) {
+    if (link_is_ch340) usb_BulkTransfer(ch_out, (void *)data, len, 3, NULL);
+    else srl_Write(&srl, data, len);
+}
+
+/* Returns 1 with a byte, 0 if none waiting, < 0 if the link failed. */
+static int link_read_byte(char *c) {
+    if (!link_is_ch340) return srl_Read(&srl, c, 1);
+    if (ch_tail == ch_head) return 0;
+    *c = (char)ch_ring[ch_tail];
+    ch_tail = (ch_tail + 1) % CH34X_RING_SIZE;
+    return 1;
+}
 
 /* ---------- USB plumbing (from the toolchain's srl_echo example) ---------- */
 
@@ -56,12 +138,21 @@ static usb_error_t handle_usb_event(usb_event_t event, void *event_data,
         /* Baud rate is ignored by the C3's USB-Serial-JTAG but required here. */
         if (srl_Open(&srl, device, srl_buf, sizeof srl_buf, SRL_INTERFACE_ANY, 115200) == SRL_SUCCESS) {
             has_srl_device = true;
+            link_is_ch340 = false;
+        } else if (ch340_open(device)) {
+            has_srl_device = true;
+            link_is_ch340 = true;
         }
     }
 
-    if (event == USB_DEVICE_DISCONNECTED_EVENT && has_srl_device && event_data == srl.dev) {
-        srl_Close(&srl);
-        has_srl_device = false;
+    if (event == USB_DEVICE_DISCONNECTED_EVENT && has_srl_device) {
+        if (link_is_ch340 && event_data == ch_dev) {
+            ch_dev = NULL;
+            has_srl_device = false;
+        } else if (!link_is_ch340 && event_data == srl.dev) {
+            srl_Close(&srl);
+            has_srl_device = false;
+        }
     }
 
     return USB_SUCCESS;
@@ -136,9 +227,9 @@ static void add_line(const char *s) {
 /* ---------- Protocol: send "CMD args\n", read lines until "OK..." or "ERR..." ---------- */
 
 static void send_line(const char *a, const char *b) {
-    srl_Write(&srl, a, strlen(a));
-    if (b) srl_Write(&srl, b, strlen(b));
-    srl_Write(&srl, "\n", 1);
+    link_write(a, strlen(a));
+    if (b) link_write(b, strlen(b));
+    link_write("\n", 1);
 }
 
 static resp_t read_response(uint16_t timeout_ms, bool show) {
@@ -153,7 +244,7 @@ static resp_t read_response(uint16_t timeout_ms, bool show) {
 
         char c;
         int n;
-        while ((n = srl_Read(&srl, &c, 1)) == 1) {
+        while ((n = link_read_byte(&c)) == 1) {
             if (c == '\r') continue;
             if (c != '\n') {
                 if (len < sizeof line - 1) line[len++] = c;

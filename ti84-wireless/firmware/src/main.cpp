@@ -14,12 +14,26 @@
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <time.h>
+// The C3 is wired to the calc's USB pads through its USB-Serial-JTAG port. A classic
+// ESP32 dev board instead talks through its CH340 USB-UART on UART0 (external, on an
+// OTG cable): no USB pull-up control, no ID/VBUS pins, and GPIO3 is its UART RX.
+#if CONFIG_IDF_TARGET_ESP32C3
+#define USB_BRIDGE_C3 1
 #include "soc/usb_serial_jtag_struct.h"
+#else
+#define USB_BRIDGE_C3 0
+#endif
 
 // ---- Pins (ESP32-C3 Super Mini) ----
+#if USB_BRIDGE_C3
 static const int PIN_ID_FET = 3;  // N-MOSFET gate: HIGH grounds the calc's USB ID pin
 static const int PIN_VBUS   = 4;  // VBUS through 100k/47k divider (5 V -> ~1.6 V)
 static const int PIN_LED    = 8;  // onboard blue LED, active low
+static const int LED_ON = LOW, LED_OFF = HIGH;
+#else
+static const int PIN_LED    = 2;  // DevKit onboard LED, active high
+static const int LED_ON = HIGH, LED_OFF = LOW;
+#endif
 
 // ---- Tunables ----
 static const uint32_t VBUS_MV_THRESHOLD = 1000;
@@ -68,17 +82,25 @@ static uint32_t portalStarted = 0;
 static String lineBuf;
 
 static bool vbusPresent() {
+#if USB_BRIDGE_C3
   return analogReadMilliVolts(PIN_VBUS) > VBUS_MV_THRESHOLD;
+#else
+  return false;
+#endif
 }
 
 static void usbPullup(bool attach) {
   // With the override set and every pull disabled, the host sees no device.
   // dp_pullup must be restored on attach: clearing the override alone leaves D+ floating.
+#if USB_BRIDGE_C3
   USB_SERIAL_JTAG.conf0.dp_pullup = attach ? 1 : 0;
   USB_SERIAL_JTAG.conf0.dm_pullup = 0;
   USB_SERIAL_JTAG.conf0.dp_pulldown = 0;
   USB_SERIAL_JTAG.conf0.dm_pulldown = 0;
   USB_SERIAL_JTAG.conf0.pad_pull_override = attach ? 0 : 1;
+#else
+  (void)attach;
+#endif
 }
 
 static void setState(LinkState s) {
@@ -87,10 +109,14 @@ static void setState(LinkState s) {
   switch (s) {
     case RELEASED:
       usbPullup(false);
+#if USB_BRIDGE_C3
       digitalWrite(PIN_ID_FET, LOW);
+#endif
       break;
     case ARMED:
+#if USB_BRIDGE_C3
       digitalWrite(PIN_ID_FET, HIGH);
+#endif
       usbPullup(true);
       break;
     case ACTIVE:
@@ -589,14 +615,18 @@ static void handleLine(String line) {
 }
 
 void setup() {
+#if USB_BRIDGE_C3
   pinMode(PIN_ID_FET, OUTPUT);
   digitalWrite(PIN_ID_FET, LOW);
-  pinMode(PIN_LED, OUTPUT);
-  digitalWrite(PIN_LED, HIGH);
   analogSetPinAttenuation(PIN_VBUS, ADC_11db);
+#endif
+  pinMode(PIN_LED, OUTPUT);
+  digitalWrite(PIN_LED, LED_OFF);
 
   Serial.begin(115200);
+#if USB_BRIDGE_C3
   Serial.setTxTimeoutMs(50);  // never stall if the calc stops reading
+#endif
   // Serial is the calc's protocol link: keep library and IDF logs off it.
   Serial.setDebugOutput(false);
   esp_log_level_set("*", ESP_LOG_NONE);
@@ -638,7 +668,7 @@ void loop() {
 
   // LED: solid = ACTIVE, slow blink = ARMED, off = RELEASED.
   bool led = linkState == ACTIVE || (linkState == ARMED && (millis() / 1000) % 4 == 0);
-  digitalWrite(PIN_LED, led ? LOW : HIGH);
+  digitalWrite(PIN_LED, led ? LED_ON : LED_OFF);
 
   delay(5);
 }
