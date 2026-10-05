@@ -48,10 +48,15 @@ faders.forEach(fader => {
     observer.observe(fader);
 });
 
-const githubUsername = 'yourusername';
+const githubUsername = 'FallenFireGit';
 
 fetch(`https://api.github.com/users/${githubUsername}/repos?sort=updated&per_page=6`)
-    .then(response => response.json())
+    .then(response => {
+        if (!response.ok) {
+            throw new Error('GitHub API returned ' + response.status);
+        }
+        return response.json();
+    })
     .then(repos => {
         const container = document.getElementById('github-projects');
         container.innerHTML = '';
@@ -60,12 +65,20 @@ fetch(`https://api.github.com/users/${githubUsername}/repos?sort=updated&per_pag
             const card = document.createElement('div');
             card.classList.add('github-card');
 
-            card.innerHTML = `
-                <h3>${repo.name}</h3>
-                <p>${repo.description || 'No description provided.'}</p>
-                <a href="${repo.html_url}" target="_blank">View on Github</a>
-                `;
+            // textContent instead of innerHTML so repo text can't inject HTML
+            const name = document.createElement('h3');
+            name.textContent = repo.name;
 
+            const description = document.createElement('p');
+            description.textContent = repo.description || 'No description provided.';
+
+            const link = document.createElement('a');
+            link.href = repo.html_url;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.textContent = 'View on Github';
+
+            card.append(name, description, link);
             container.appendChild(card);
         });
     })
